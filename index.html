@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Live Paint Studio - Watch AI Draw Live</title>
+    <!-- Tailwind CSS for modern aesthetics -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter & Caveat for sketched text elements -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Caveat:wght@700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- MQTT Over WebSockets for Keyless Real-Time Sync -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .canvas-grid {
+            background-size: 20px 20px;
+            background-image: linear-gradient(to right, rgba(226, 232, 240, 0.4) 1px, transparent 1px),
+                              linear-gradient(to bottom, rgba(226, 232, 240, 0.4) 1px, transparent 1px);
+        }
+        /* Virtual brush cursor pulse/active style */
+        .ai-brush-active {
+            transition: transform 0.05s ease-out;
+            pointer-events: none;
+        }
+        /* Custom scrollbar for sleeker dashboard feel */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col overflow-x-hidden">
+
+    <!-- Header -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex flex-wrap justify-between items-center gap-4">
+        <div class="flex items-center gap-3">
+            <div class="bg-indigo-600 text-white p-2 rounded-xl shadow-lg shadow-indigo-500/30 flex items-center justify-center animate-pulse">
+                <i class="fa-solid fa-wand-magic-sparkles text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                    AI Live Paint Studio
+                </h1>
+                <p class="text-xs text-slate-400">Watch the AI control the brush & paint in real-time</p>
+            </div>
+        </div>
+        
+        <!-- Live Sync Telemetry Badging -->
+        <div class="flex items-center gap-3 flex-wrap">
+            <div id="roomBadge" class="hidden items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold">
+                <i class="fa-solid fa-tower-broadcast animate-pulse"></i>
+                <span>Room: <strong id="roomBadgeId" class="text-white">None</strong></span>
+            </div>
+            <div id="apiStatusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span>GitHub Pages Sandbox Mode (Keyless)</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Notification Toast System -->
+    <div id="toastNotification" class="fixed top-20 right-6 z-50 transform translate-x-96 transition-all duration-300 ease-out bg-slate-900 border border-indigo-500/40 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 max-w-sm pointer-events-none opacity-0">
+        <div class="p-1.5 bg-indigo-500/20 text-indigo-400 rounded-lg">
+            <i class="fa-solid fa-circle-info"></i>
+        </div>
+        <p id="toastText" class="text-xs font-medium"></p>
+    </div>
+
+    <!-- Main Workspace Grid -->
+    <main class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 max-w-[1600px] w-full mx-auto">
+        
+        <!-- Left Column: The Interactive Canvas & Workspace Controls (8 cols on large screens) -->
+        <div class="lg:col-span-8 flex flex-col gap-4">
+            <!-- Canvas container -->
+            <div class="relative bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex-1 flex flex-col min-h-[500px]">
+                <!-- Interactive overlay header with drawing statistics -->
+                <div class="px-5 py-3 border-b border-slate-800 bg-slate-900/50 flex justify-between items-center text-sm">
+                    <div class="flex items-center gap-3">
+                        <span id="canvasStatusText" class="text-xs font-semibold uppercase tracking-wider text-indigo-400 flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></span>
+                            Canvas Ready
+                        </span>
+                        <span class="text-slate-500">|</span>
+                        <span id="strokeCounter" class="text-xs text-slate-400">Strokes: 0</span>
+                    </div>
+                    <!-- Mode toggles -->
+                    <div class="flex items-center gap-2 text-xs">
+                        <button onclick="clearCanvas()" class="px-2.5 py-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition">
+                            <i class="fa-solid fa-trash-can mr-1"></i> Clear
+                        </button>
+                        <button onclick="undoLastAction()" class="px-2.5 py-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition">
+                            <i class="fa-solid fa-rotate-left mr-1"></i> Undo
+                        </button>
+                        <button onclick="downloadCanvasImage()" class="px-2.5 py-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition">
+                            <i class="fa-solid fa-download mr-1"></i> Export
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Canvas Core Area -->
+                <div class="relative flex-1 bg-white overflow-hidden canvas-grid cursor-crosshair flex items-center justify-center min-h-[450px]">
+                    <!-- Real Canvas -->
+                    <canvas id="paintCanvas" width="800" height="600" class="max-w-full max-h-full aspect-[4/3] bg-white shadow-md rounded-lg transition-transform duration-300"></canvas>
+                    
+                    <!-- Floating AI Hand / Brush Cursor -->
+                    <div id="aiCursor" class="absolute top-0 left-0 w-8 h-8 pointer-events-none z-30 transform -translate-x-1/2 -translate-y-1/2 transition-all duration-75 ease-out opacity-0">
+                        <!-- Simulated Stylus Pencil Icon -->
+                        <div class="relative">
+                            <i class="fa-solid fa-pen-nib text-slate-900 text-2xl drop-shadow-[0_2px_4px_rgba(0,0,0,0.4)] animate-bounce"></i>
+                            <!-- Dynamic Brush Trail indicator -->
+                            <span id="aiCursorColorDot" class="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white bg-indigo-500 shadow-md"></span>
+                        </div>
+                    </div>
+
+                    <!-- Watermark -->
+                    <div class="absolute bottom-4 right-4 text-xs font-bold text-slate-300 pointer-events-none select-none tracking-widest flex items-center gap-1 opacity-60">
+                        <i class="fa-solid fa-palette text-indigo-400"></i> AI ACTIVE CANVAS
+                    </div>
+                </div>
+
+                <!-- Live Drawing Playback Bar & Sound Controls -->
+                <div class="p-4 border-t border-slate-800 bg-slate-900/80 flex flex-wrap justify-between items-center gap-4">
+                    <div class="flex items-center gap-4">
+                        <span class="text-xs text-slate-400">Drawing Speed:</span>
+                        <div class="flex items-center gap-2">
+                            <button onclick="setDrawingSpeed('slow')" id="speed-slow" class="px-2 py-1 rounded text-xs border border-slate-700 text-slate-400 hover:bg-slate-800">Slow</button>
+                            <button onclick="setDrawingSpeed('medium')" id="speed-medium" class="px-2 py-1 rounded text-xs border border-indigo-500 bg-indigo-500/10 text-indigo-400 font-semibold">Normal</button>
+                            <button onclick="setDrawingSpeed('fast')" id="speed-fast" class="px-2 py-1 rounded text-xs border border-slate-700 text-slate-400 hover:bg-slate-800">Fast</button>
+                            <button onclick="setDrawingSpeed('instant')" id="speed-instant" class="px-2 py-1 rounded text-xs border border-slate-700 text-slate-400 hover:bg-slate-800">Instant</button>
+                        </div>
+                    </div>
+
+                    <!-- Sound Effect Synthesis Control -->
+                    <div class="flex items-center gap-3 bg-slate-950/50 border border-slate-800 px-3 py-1.5 rounded-xl">
+                        <button onclick="toggleSoundEngine()" id="soundToggleBtn" class="text-slate-400 hover:text-white transition">
+                            <i id="soundIcon" class="fa-solid fa-volume-xmark text-lg"></i>
+                        </button>
+                        <span class="text-xs text-slate-400 select-none">Sketch Audio Synth</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Manual Drawing Toolstrip -->
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-medium text-slate-400 mr-2">Your Brush:</span>
+                    <button onclick="setUserColor('#ef4444')" class="w-7 h-7 rounded-full bg-red-500 border-2 border-slate-900 ring-2 ring-transparent hover:ring-white transition" title="Red"></button>
+                    <button onclick="setUserColor('#3b82f6')" class="w-7 h-7 rounded-full bg-blue-500 border-2 border-slate-900 ring-2 ring-transparent hover:ring-white transition" title="Blue"></button>
+                    <button onclick="setUserColor('#10b981')" class="w-7 h-7 rounded-full bg-emerald-500 border-2 border-slate-900 ring-2 ring-transparent hover:ring-white transition" title="Green"></button>
+                    <button onclick="setUserColor('#eab308')" class="w-7 h-7 rounded-full bg-yellow-500 border-2 border-slate-900 ring-2 ring-transparent hover:ring-white transition" title="Yellow"></button>
+                    <button onclick="setUserColor('#000000')" class="w-7 h-7 rounded-full bg-black border-2 border-slate-900 ring-2 ring-transparent hover:ring-white transition" title="Black"></button>
+                </div>
+
+                <div class="flex items-center gap-3">
+                    <span class="text-xs text-slate-400">Brush Size:</span>
+                    <input type="range" id="userBrushWidth" min="1" max="25" value="5" oninput="updateUserBrushWidthValue(this.value)" class="w-24 accent-indigo-500 cursor-pointer">
+                    <span id="brushWidthValue" class="text-xs text-indigo-400 font-bold w-6">5px</span>
+                </div>
+
+                <div class="text-xs text-slate-400 flex items-center gap-1.5">
+                    <i class="fa-solid fa-info-circle text-indigo-400"></i>
+                    <span>Drag inside canvas to sketch alongside AI</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: AI Sandbox and Live Agent Dashboard -->
+        <div class="lg:col-span-4 flex flex-col gap-6">
+            
+            <!-- Controls / Mode Switcher Tabs -->
+            <div class="bg-slate-900 border border-slate-800 p-2 rounded-2xl flex gap-1">
+                <button onclick="switchTab('link-mode')" id="tabBtn-link-mode" class="flex-1 py-2 text-xs font-bold rounded-xl transition bg-indigo-600 text-white shadow-lg">
+                    <i class="fa-solid fa-link mr-1"></i> Link-Share Mode
+                </button>
+                <button onclick="switchTab('agent-room')" id="tabBtn-agent-room" class="flex-1 py-2 text-xs font-bold rounded-xl transition text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-terminal mr-1"></i> Live Agent Room
+                </button>
+            </div>
+
+            <!-- Tab Content: Link-Share Mode -->
+            <div id="tabContent-link-mode" class="flex flex-col gap-5">
+                <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4 shadow-xl">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-circle-nodes text-indigo-400 text-lg"></i>
+                        <h2 class="font-bold text-md text-slate-200">AI Deep-Link Generator</h2>
+                    </div>
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        Copy our specialized payload template and paste it into **any AI chat window** (Gemini, Claude, GPT). The AI will generate a unique link. When you click it, it draws live here!
+                    </p>
+
+                    <button onclick="copyAiTemplatePrompt()" class="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl text-xs transition duration-200 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20">
+                        <i class="fa-solid fa-copy"></i> Copy AI Prompt Instructions
+                    </button>
+                </div>
+
+                <!-- Instant Masterpieces -->
+                <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4 shadow-xl">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-play-circle text-purple-400 text-lg"></i>
+                            <h2 class="font-bold text-md text-slate-200">Catalog Showcase</h2>
+                        </div>
+                        <span class="px-2 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-[10px] text-purple-400 uppercase font-bold tracking-widest">Offline</span>
+                    </div>
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        Test the live parser directly using locally stored designs:
+                    </p>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="loadMasterpiece('nature')" class="p-2.5 bg-slate-950 hover:bg-slate-850 hover:border-purple-500 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium transition text-left flex items-center gap-2">
+                            <i class="fa-solid fa-mountain text-emerald-400"></i> Pine Landscape
+                        </button>
+                        <button onclick="loadMasterpiece('space')" class="p-2.5 bg-slate-950 hover:bg-slate-850 hover:border-purple-500 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium transition text-left flex items-center gap-2">
+                            <i class="fa-solid fa-rocket text-indigo-400"></i> Cyber Rocket
+                        </button>
+                        <button onclick="loadMasterpiece('cat')" class="p-2.5 bg-slate-950 hover:bg-slate-850 hover:border-purple-500 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium transition text-left flex items-center gap-2">
+                            <i class="fa-solid fa-cat text-amber-400"></i> Playful Cat
+                        </button>
+                        <button onclick="loadMasterpiece('flower')" class="p-2.5 bg-slate-950 hover:bg-slate-850 hover:border-purple-500 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium transition text-left flex items-center gap-2">
+                            <i class="fa-solid fa-seedling text-pink-400"></i> Royal Flower
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab Content: Live Agent Room -->
+            <div id="tabContent-agent-room" class="hidden flex-col gap-5">
+                <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4 shadow-xl">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-circle-play text-emerald-400 text-lg"></i>
+                            <h2 class="font-bold text-md text-slate-200">Connect to Live Room</h2>
+                        </div>
+                        <span id="mqttStatusDot" class="w-3 h-3 rounded-full bg-red-500 border-2 border-slate-950 animate-pulse"></span>
+                    </div>
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        Generate an active multiplayer channel. Any external script can post live vector data directly to your window.
+                    </p>
+
+                    <div class="flex gap-2">
+                        <button onclick="initializeMqttRoom()" id="initRoomBtn" class="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-xs transition">
+                            Create Room ID
+                        </button>
+                        <button onclick="copyMqttInviteUrl()" id="copyInviteBtn" disabled class="flex-1 py-2 px-3 bg-slate-800 border border-slate-700 text-slate-400 font-semibold rounded-xl text-xs transition cursor-not-allowed">
+                            Copy Invite URL
+                        </button>
+                    </div>
+
+                    <!-- Python Agent Automation Script -->
+                    <div class="flex flex-col gap-2 mt-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] font-bold tracking-wider text-slate-400 uppercase">Python Script for AI Agent:</span>
+                            <button onclick="copyPythonCode()" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold">Copy Script</button>
+                        </div>
+                        <pre class="bg-slate-950 border border-slate-850 p-3 rounded-xl font-mono text-[10px] text-slate-300 overflow-x-auto select-all max-h-40" id="pythonCodeBlock">
+# Tell your AI Agent to run this Python snippet:
+import json, time
+import paho.mqtt.client as mqtt
+
+# Fill in your Active Room ID here:
+room_id = "GENERATE_ROOM_ID_FIRST"
+
+client = mqtt.Client()
+client.connect("broker.hivemq.com", 1883, 60)
+
+commands = [
+    {"type": "color", "value": "#6366f1"},
+    {"type": "width", "value": 5},
+    {"type": "beginPath"},
+    {"type": "moveTo", "x": 100, "y": 100},
+    {"type": "lineTo", "x": 700, "y": 500},
+    {"type": "stroke"}
+]
+
+client.publish(f"paintstudio/rooms/{room_id}", json.dumps(commands))
+print("Vector blueprints transmitted!")
+                        </pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Live Thought Stream -->
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 flex-1 min-h-[200px] shadow-xl">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-terminal text-emerald-400 text-lg"></i>
+                        <h2 class="font-bold text-md text-slate-200">AI Telemetry Feed</h2>
+                    </div>
+                    <button onclick="clearActivityLogs()" class="text-[10px] text-slate-500 hover:text-slate-300 transition uppercase font-bold">Clear</button>
+                </div>
+
+                <!-- Feed Output Scrollable Box -->
+                <div id="aiActivityLogBox" class="flex-1 bg-slate-950 border border-slate-850 p-3 rounded-xl font-mono text-xs text-slate-300 flex flex-col gap-2 overflow-y-auto max-h-[220px]">
+                    <div class="text-slate-500 italic">// Waiting for instructions...</div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Direct Paste Modal Toggle -->
+    <section class="max-w-[1600px] w-full mx-auto px-6 pb-6">
+        <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col gap-3">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 flex items-center gap-2">
+                    <i class="fa-solid fa-keyboard text-indigo-400"></i> Manual Vector Console (Paste Raw JSON)
+                </span>
+                <button onclick="executeManualJson()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition">
+                    Run Console Commands
+                </button>
+            </div>
+            <textarea id="manualJsonInput" rows="2" placeholder='[{"type":"color","value":"#e11d48"},{"type":"beginPath"},{"type":"moveTo","x":200,"y":300},{"type":"lineTo","x":600,"y":300},{"type":"stroke"}]' class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 font-mono text-xs text-slate-300 focus:border-indigo-500 transition outline-none resize-none"></textarea>
+        </div>
+    </section>
+
+    <!-- Interactive Footer -->
+    <footer class="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500 mt-auto">
+        Designed for absolute playability. Watch drawing animations step-by-step or host collaborative sandbox rooms.
+    </footer>
+
+    <script>
+        // --- SOUND ENGINE (WEB AUDIO API) ---
+        let audioCtx = null;
+        let isSoundEnabled = false;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function toggleSoundEngine() {
+            initAudio();
+            isSoundEnabled = !isSoundEnabled;
+            const soundBtn = document.getElementById('soundToggleBtn');
+            const soundIcon = document.getElementById('soundIcon');
+            
+            if (isSoundEnabled) {
+                soundIcon.className = "fa-solid fa-volume-high text-indigo-400";
+                soundBtn.title = "Mute Canvas Sound";
+                playCuteBeep(440, 100, 0.05);
+                addActivityLog("Sound synthesis engine activated! Enjoy realistic canvas feedback.");
+            } else {
+                soundIcon.className = "fa-solid fa-volume-xmark text-slate-500";
+                soundBtn.title = "Enable Canvas Sound";
+                addActivityLog("Sound muted.");
+            }
+        }
+
+        function playCuteBeep(frequency = 440, durationMs = 150, volume = 0.08) {
+            if (!isSoundEnabled || !audioCtx) return;
+            try {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+                
+                gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + (durationMs / 1000));
+                
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                
+                osc.start();
+                osc.stop(audioCtx.currentTime + (durationMs / 1000));
+            } catch (e) {
+                console.debug("Audio error:", e);
+            }
+        }
+
+        let currentScribbleOsc = null;
+        let currentScribbleGain = null;
+
+        function startDrawingScratchSound() {
+            if (!isSoundEnabled || !audioCtx) return;
+            try {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                
+                currentScribbleOsc = audioCtx.createOscillator();
+                currentScribbleGain = audioCtx.createGain();
+                const filter = audioCtx.createBiquadFilter();
+
+                currentScribbleOsc.type = 'triangle';
+                currentScribbleOsc.frequency.setValueAtTime(120, audioCtx.currentTime);
+
+                filter.type = 'bandpass';
+                filter.frequency.setValueAtTime(1000, audioCtx.currentTime);
+                filter.Q.setValueAtTime(4, audioCtx.currentTime);
+
+                currentScribbleGain.gain.setValueAtTime(0.015, audioCtx.currentTime);
+
+                currentScribbleOsc.connect(filter);
+                filter.connect(currentScribbleGain);
+                currentScribbleGain.connect(audioCtx.destination);
+
+                currentScribbleOsc.start();
+            } catch (e) {
+                console.debug(e);
+            }
+        }
+
+        function updateDrawingScratchSound(x, y, previousX, previousY) {
+            if (!isSoundEnabled || !currentScribbleOsc || !audioCtx) return;
+            try {
+                const dx = x - previousX;
+                const dy = y - previousY;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                const speedFrequency = Math.min(220, 90 + (dist * 1.5));
+                currentScribbleOsc.frequency.setValueAtTime(speedFrequency, audioCtx.currentTime);
+                
+                currentScribbleGain.gain.setValueAtTime(Math.min(0.03, 0.008 + (dist * 0.001)), audioCtx.currentTime);
+            } catch (e) {}
+        }
+
+        function stopDrawingScratchSound() {
+            if (currentScribbleOsc) {
+                try {
+                    currentScribbleOsc.stop();
+                    currentScribbleOsc.disconnect();
+                } catch(e){}
+                currentScribbleOsc = null;
+            }
+            if (currentScribbleGain) {
+                try { currentScribbleGain.disconnect(); } catch(e){}
+                currentScribbleGain = null;
+            }
+        }
+
+        // --- STREAMING_CHUNK: Setting up the Canvas viewport & drawing states... ---
+        // --- CANVAS & DRAWING LOGIC ---
+        const canvas = document.getElementById('paintCanvas');
+        const ctx = canvas.getContext('2d');
+        const strokeCounterEl = document.getElementById('strokeCounter');
+        const canvasStatusText = document.getElementById('canvasStatusText');
+        const aiCursor = document.getElementById('aiCursor');
+        const aiCursorColorDot = document.getElementById('aiCursorColorDot');
+
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+        let history = []; 
+        let userBrushColor = '#000000';
+        let userBrushWidth = 5;
+
+        function saveToHistory() {
+            if (history.length > 25) {
+                history.shift(); 
+            }
+            history.push(canvas.toDataURL());
+            strokeCounterEl.textContent = `Strokes: ${history.length}`;
+        }
+
+        function clearCanvas() {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            saveToHistory();
+            addActivityLog("Canvas cleared.");
+            playCuteBeep(330, 100, 0.05);
+        }
+
+        function undoLastAction() {
+            if (history.length > 1) {
+                history.pop(); 
+                const previousState = history[history.length - 1];
+                const img = new Image();
+                img.onload = function() {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0);
+                    strokeCounterEl.textContent = `Strokes: ${history.length}`;
+                };
+                img.src = previousState;
+                addActivityLog("Undone last path.");
+                playCuteBeep(220, 150, 0.04);
+            } else if (history.length === 1) {
+                history.pop();
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                strokeCounterEl.textContent = `Strokes: 0`;
+                addActivityLog("Canvas reset to clean state.");
+            }
+        }
+
+        function downloadCanvasImage() {
+            try {
+                const link = document.createElement('a');
+                link.download = `ai-masterpiece-${Date.now()}.png`;
+                link.href = canvas.toDataURL();
+                link.click();
+                addActivityLog("Canvas exported successfully.");
+                playCuteBeep(520, 200, 0.05);
+            } catch (e) {
+                addActivityLog("Export failed: " + e.message);
+            }
+        }
+
+        function getCanvasMouseCoords(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            if (e.touches && e.touches[0]) {
+                return {
+                    x: (e.touches[0].clientX - rect.left) * scaleX,
+                    y: (e.touches[0].clientY - rect.top) * scaleY
+                };
+            }
+            return {
+                x: (e.clientX - rect.left) * scaleX,
+                y: (e.clientY - rect.top) * scaleY
+            };
+        }
+
+        function startDrawing(e) {
+            if (isAiDrawing) return; 
+            isDrawing = true;
+            const coords = getCanvasMouseCoords(e);
+            lastX = coords.x;
+            lastY = coords.y;
+            
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
+            startDrawingScratchSound();
+        }
+
+        function draw(e) {
+            if (!isDrawing || isAiDrawing) return;
+            e.preventDefault(); 
+            const coords = getCanvasMouseCoords(e);
+            
+            ctx.lineWidth = userBrushWidth;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = userBrushColor;
+            
+            ctx.lineTo(coords.x, coords.y);
+            ctx.stroke();
+
+            updateDrawingScratchSound(coords.x, coords.y, lastX, lastY);
+            
+            lastX = coords.x;
+            lastY = coords.y;
+        }
+
+        function stopDrawing() {
+            if (isDrawing) {
+                isDrawing = false;
+                stopDrawingScratchSound();
+                saveToHistory();
+            }
+        }
+
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', stopDrawing);
+        canvas.addEventListener('mouseleave', stopDrawing);
+        canvas.addEventListener('touchstart', startDrawing);
+        canvas.addEventListener('touchmove', draw);
+        canvas.addEventListener('touchend', stopDrawing);
+
+        function setUserColor(hex) {
+            userBrushColor = hex;
+            addActivityLog(`Brush color adjusted to ${hex}.`);
+            playCuteBeep(600, 60, 0.03);
+        }
+
+        function updateUserBrushWidthValue(val) {
+            userBrushWidth = val;
+            document.getElementById('brushWidthValue').textContent = `${val}px`;
+        }
+
+        // --- STREAMING_CHUNK: Crafting the AI Virtual Artist Drawing Motor... ---
+        // --- AI DRAWING MOTOR / COMMAND INTERPRETER ---
+        let isAiDrawing = false;
+        let drawingSpeedDelay = 35; 
+
+        function setDrawingSpeed(speed) {
+            ['slow', 'medium', 'fast', 'instant'].forEach(s => {
+                const el = document.getElementById(`speed-${s}`);
+                el.className = "px-2 py-1 rounded text-xs border border-slate-700 text-slate-400 hover:bg-slate-800";
+            });
+
+            const activeEl = document.getElementById(`speed-${speed}`);
+            activeEl.className = "px-2 py-1 rounded text-xs border border-indigo-500 bg-indigo-500/10 text-indigo-400 font-semibold";
+
+            if (speed === 'slow') drawingSpeedDelay = 120;
+            else if (speed === 'medium') drawingSpeedDelay = 35;
+            else if (speed === 'fast') drawingSpeedDelay = 10;
+            else if (speed === 'instant') drawingSpeedDelay = 0;
+
+            addActivityLog(`Live drawing speed altered to: ${speed.toUpperCase()}`);
+            playCuteBeep(500, 80, 0.05);
+        }
+
+        async function runDrawingCommandsLive(commands) {
+            if (isAiDrawing || !commands || commands.length === 0) return;
+            isAiDrawing = true;
+            canvasStatusText.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>AI Sketching...`;
+            addActivityLog("AI Agent has initialized virtual pen controller...");
+            
+            aiCursor.style.opacity = "1";
+            let lastAiX = 0;
+            let lastAiY = 0;
+
+            startDrawingScratchSound();
+
+            for (let i = 0; i < commands.length; i++) {
+                if (!isAiDrawing) break; 
+
+                const cmd = commands[i];
+                switch (cmd.type) {
+                    case 'color':
+                        ctx.strokeStyle = cmd.value;
+                        ctx.fillStyle = cmd.value;
+                        aiCursorColorDot.style.backgroundColor = cmd.value;
+                        addActivityLog(`AI switched ink color to ${cmd.value}`);
+                        playCuteBeep(700, 40, 0.02);
+                        break;
+                    case 'width':
+                        ctx.lineWidth = parseInt(cmd.value) || 3;
+                        break;
+                    case 'beginPath':
+                        ctx.beginPath();
+                        break;
+                    case 'stroke':
+                        ctx.stroke();
+                        break;
+                    case 'moveTo':
+                        ctx.moveTo(cmd.x, cmd.y);
+                        updateVirtualCursorPosition(cmd.x, cmd.y);
+                        lastAiX = cmd.x;
+                        lastAiY = cmd.y;
+                        break;
+                    case 'lineTo':
+                        ctx.lineTo(cmd.x, cmd.y);
+                        ctx.stroke();
+                        updateVirtualCursorPosition(cmd.x, cmd.y);
+                        updateDrawingScratchSound(cmd.x, cmd.y, lastAiX, lastAiY);
+                        lastAiX = cmd.x;
+                        lastAiY = cmd.y;
+                        break;
+                    case 'quadraticCurveTo':
+                        ctx.quadraticCurveTo(cmd.cpx, cmd.cpy, cmd.x, cmd.y);
+                        ctx.stroke();
+                        updateVirtualCursorPosition(cmd.x, cmd.y);
+                        lastAiX = cmd.x;
+                        lastAiY = cmd.y;
+                        break;
+                    case 'circle':
+                        ctx.beginPath();
+                        ctx.arc(cmd.x, cmd.y, cmd.r, 0, 2 * Math.PI);
+                        if (cmd.fill) {
+                            ctx.fill();
+                        } else {
+                            ctx.stroke();
+                        }
+                        updateVirtualCursorPosition(cmd.x, cmd.y);
+                        playCuteBeep(900, 40, 0.02);
+                        break;
+                    case 'rect':
+                        ctx.beginPath();
+                        ctx.rect(cmd.x, cmd.y, cmd.w, cmd.h);
+                        if (cmd.fill) {
+                            ctx.fill();
+                        } else {
+                            ctx.stroke();
+                        }
+                        updateVirtualCursorPosition(cmd.x, cmd.y);
+                        playCuteBeep(850, 40, 0.02);
+                        break;
+                    case 'text':
+                        ctx.font = `${cmd.size || 16}px 'Caveat', 'Inter', cursive`;
+                        ctx.fillText(cmd.text, cmd.x, cmd.y);
+                        updateVirtualCursorPosition(cmd.x, cmd.y);
+                        playCuteBeep(950, 60, 0.04);
+                        break;
+                }
+
+                if (drawingSpeedDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, drawingSpeedDelay));
+                }
+            }
+
+            stopDrawingScratchSound();
+            aiCursor.style.opacity = "0";
+            isAiDrawing = false;
+            canvasStatusText.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>Canvas Ready`;
+            addActivityLog("AI Masterpiece drawing sequence complete!");
+            playCuteBeep(520, 250, 0.06);
+            saveToHistory();
+        }
+
+        function updateVirtualCursorPosition(canvasX, canvasY) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width / canvas.width;
+            const scaleY = rect.height / canvas.height;
+            
+            const viewportX = (canvasX * scaleX);
+            const viewportY = (canvasY * scaleY);
+
+            aiCursor.style.left = `${viewportX}px`;
+            aiCursor.style.top = `${viewportY}px`;
+        }
+
+        // --- STREAMING_CHUNK: Setting up URL parameters & Deep-Linking tools... ---
+        // --- COPIABLE TEMPLATES FOR EXTERNAL LLM AGENTS ---
+        const PROMPT_TEMPLATE_TEXT = `You are a creative drawing agent. I want you to draw a customized illustration of [TOPIC HERE]. 
+
+Generate the layout on a canvas grid size of 800x600. Output ONLY a valid JSON command structure inside a single shareable link. No standard chat conversational prose.
+
+Available commands:
+- {"type": "color", "value": "#HEX"}
+- {"type": "width", "value": 1-15}
+- {"type": "beginPath"}
+- {"type": "moveTo", "x": X, "y": Y}
+- {"type": "lineTo", "x": X, "y": Y}
+- {"type": "stroke"}
+- {"type": "circle", "x": X, "y": Y, "r": R, "fill": BOOLEAN}
+- {"type": "rect", "x": X, "y": Y, "w": W, "h": H, "fill": BOOLEAN}
+- {"type": "text", "x": X, "y": Y, "text": "...", "size": NUMBER}
+
+Compile your list of 40-100 commands, convert the JSON array to a URL-encoded string, and generate the final link using this exact template format:
+URL_HERE?sketch=URL_ENCODED_JSON_STRING
+
+Replace 'URL_HERE' with the link to my drawing page.`;
+
+        function copyAiTemplatePrompt() {
+            // Replaces base URL dynamically based on where page is hosted
+            const currentUrl = window.location.origin + window.location.pathname;
+            const customPrompt = PROMPT_TEMPLATE_TEXT.replace("URL_HERE", currentUrl);
+            
+            // Fallback copy utility for iframe safe usage
+            const textarea = document.createElement("textarea");
+            textarea.value = customPrompt;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textarea);
+
+            showToast("Copied prompt guidelines to clipboard!");
+            playCuteBeep(800, 100, 0.04);
+        }
+
+        function checkUrlQueryParams() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sketchPayload = urlParams.get('sketch');
+            const roomPayload = urlParams.get('room');
+
+            if (sketchPayload) {
+                try {
+                    const decodedJson = decodeURIComponent(sketchPayload);
+                    const commands = JSON.parse(decodedJson);
+                    addActivityLog("Found pending drawing payload in URL. Loading sketch animation!");
+                    showToast("Incoming URL Sketch loaded! Preparing AI canvas...");
+                    
+                    // Delay execution slightly so loading settles
+                    setTimeout(() => {
+                        runDrawingCommandsLive(commands);
+                    }, 1200);
+                } catch (e) {
+                    addActivityLog("Error decoding query drawing parameter: " + e.message);
+                }
+            }
+
+            if (roomPayload) {
+                addActivityLog(`Deep link requested direct login into Room: ${roomPayload}`);
+                switchTab('agent-room');
+                setTimeout(() => {
+                    initializeMqttRoom(roomPayload);
+                }, 500);
+            }
+        }
+
+        // --- STREAMING_CHUNK: Integrating keyless MQTT relay room connection... ---
+        // --- LIVE AGENT ROOM SYSTEM (MQTT OVER WEBSOCKETS) ---
+        let mqttClient = null;
+        let currentRoomId = null;
+
+        function initializeMqttRoom(forcedRoomId = null) {
+            if (mqttClient && mqttClient.isConnected()) {
+                addActivityLog("MQTT client already running.");
+                return;
+            }
+
+            const randomId = forcedRoomId || "room-" + Math.floor(100000 + Math.random() * 900000);
+            currentRoomId = randomId;
+
+            // Connect using a free public secure MQTT broker
+            // HiveMQ public secure websocket endpoint
+            const brokerHost = "broker.hivemq.com";
+            const brokerPort = 8000; 
+            const clientUuid = "studio-client-" + Math.random().toString(16).substring(2, 8);
+
+            addActivityLog(`Attempting to join live sandbox room: ${currentRoomId}...`);
+            document.getElementById('initRoomBtn').disabled = true;
+            document.getElementById('initRoomBtn').innerText = "Connecting...";
+
+            mqttClient = new Paho.MQTT.Client(brokerHost, brokerPort, clientUuid);
+
+            mqttClient.onConnectionLost = onMqttConnectionLost;
+            mqttClient.onMessageArrived = onMqttMessageArrived;
+
+            const connectOptions = {
+                useSSL: false, // Port 8000 is usually standard ws
+                onSuccess: onMqttConnectSuccess,
+                onFailure: onMqttConnectFailure,
+                keepAliveInterval: 30
+            };
+
+            try {
+                mqttClient.connect(connectOptions);
+            } catch (err) {
+                addActivityLog("Relay setup error: " + err.message);
+                document.getElementById('initRoomBtn').disabled = false;
+                document.getElementById('initRoomBtn').innerText = "Create Room ID";
+            }
+        }
+
+        function onMqttConnectSuccess() {
+            addActivityLog(`Successfully joined secure room: ${currentRoomId}!`);
+            showToast("Connected to live agent relay!");
+
+            // Update DOM telemetry indicators
+            const dot = document.getElementById('mqttStatusDot');
+            dot.className = "w-3 h-3 rounded-full bg-emerald-500 border-2 border-slate-950 animate-pulse";
+            
+            const badge = document.getElementById('roomBadge');
+            badge.classList.remove('hidden');
+            badge.classList.add('flex');
+            document.getElementById('roomBadgeId').innerText = currentRoomId;
+
+            const initBtn = document.getElementById('initRoomBtn');
+            initBtn.className = "flex-1 py-2 px-3 bg-slate-800 text-slate-400 font-semibold rounded-xl text-xs transition cursor-not-allowed";
+            initBtn.disabled = true;
+            initBtn.innerText = "Connected";
+
+            const inviteBtn = document.getElementById('copyInviteBtn');
+            inviteBtn.className = "flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-xs transition";
+            inviteBtn.disabled = false;
+
+            // Update the python command code block inside user console
+            const updatedPython = document.getElementById('pythonCodeBlock').innerText.replace("GENERATE_ROOM_ID_FIRST", currentRoomId);
+            document.getElementById('pythonCodeBlock').innerText = updatedPython;
+
+            // Subscribe to the unique channel topic
+            const topic = `paintstudio/rooms/${currentRoomId}`;
+            mqttClient.subscribe(topic);
+            addActivityLog(`Listening for payloads on topic: ${topic}`);
+            playCuteBeep(600, 200, 0.08);
+        }
+
+        function onMqttConnectFailure(err) {
+            addActivityLog("Connection failed: " + err.errorMessage);
+            document.getElementById('initRoomBtn').disabled = false;
+            document.getElementById('initRoomBtn').innerText = "Create Room ID";
+            showToast("Failed to connect to relay.");
+        }
+
+        function onMqttConnectionLost(responseObject) {
+            addActivityLog("Lost connection to WebSocket broker.");
+            const dot = document.getElementById('mqttStatusDot');
+            dot.className = "w-3 h-3 rounded-full bg-red-500 border-2 border-slate-950 animate-pulse";
+            
+            const initBtn = document.getElementById('initRoomBtn');
+            initBtn.className = "flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-xs transition";
+            initBtn.disabled = false;
+            initBtn.innerText = "Create Room ID";
+
+            const inviteBtn = document.getElementById('copyInviteBtn');
+            inviteBtn.className = "flex-1 py-2 px-3 bg-slate-800 border border-slate-700 text-slate-400 font-semibold rounded-xl text-xs transition cursor-not-allowed";
+            inviteBtn.disabled = true;
+        }
+
+        function onMqttMessageArrived(message) {
+            addActivityLog(`Incoming message packet received on channel!`);
+            try {
+                const commands = JSON.parse(message.payloadString);
+                
+                // If nested payload
+                const actualCommands = commands.commands ? commands.commands : commands;
+                
+                if (Array.isArray(actualCommands)) {
+                    addActivityLog(`Executing ${actualCommands.length} live commands pushed from Agent.`);
+                    runDrawingCommandsLive(actualCommands);
+                }
+            } catch (e) {
+                addActivityLog("Error decoding incoming packet JSON: " + e.message);
+            }
+        }
+
+        function copyMqttInviteUrl() {
+            if (!currentRoomId) return;
+            const currentUrl = window.location.origin + window.location.pathname + "?room=" + currentRoomId;
+            
+            const textarea = document.createElement("textarea");
+            textarea.value = currentUrl;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textarea);
+
+            showToast("Copied Agent Link! Send this directly to your AI agent.");
+            playCuteBeep(850, 80, 0.04);
+        }
+
+        function copyPythonCode() {
+            const pre = document.getElementById('pythonCodeBlock');
+            const textarea = document.createElement("textarea");
+            textarea.value = pre.innerText;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textarea);
+
+            showToast("Copied Automation script!");
+            playCuteBeep(500, 80, 0.03);
+        }
+
+        // --- STREAMING_CHUNK: Preparing UI managers, toasts and fallback catalogs... ---
+        // --- TAB NAVIGATION MANAGER ---
+        function switchTab(tabId) {
+            ['link-mode', 'agent-room'].forEach(t => {
+                const btn = document.getElementById(`tabBtn-${t}`);
+                const content = document.getElementById(`tabContent-${t}`);
+                
+                if (t === tabId) {
+                    btn.className = "flex-1 py-2 text-xs font-bold rounded-xl transition bg-indigo-600 text-white shadow-lg";
+                    content.classList.remove('hidden');
+                    content.classList.add('flex');
+                } else {
+                    btn.className = "flex-1 py-2 text-xs font-bold rounded-xl transition text-slate-400 hover:text-white";
+                    content.classList.remove('flex');
+                    content.classList.add('hidden');
+                }
+            });
+            playCuteBeep(500, 60, 0.03);
+        }
+
+        // --- MANUAL JSON CONSOLE UTILITIES ---
+        function executeManualJson() {
+            const raw = document.getElementById('manualJsonInput').value.trim();
+            if (!raw) return;
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    addActivityLog("Executing custom manual console code...");
+                    runDrawingCommandsLive(parsed);
+                } else {
+                    addActivityLog("Console input must be an array of objects.");
+                }
+            } catch (err) {
+                addActivityLog("Console syntax error: " + err.message);
+            }
+        }
+
+        // --- TOAST NOTIFICATION CONTROLLER ---
+        function showToast(message) {
+            const toast = document.getElementById('toastNotification');
+            const text = document.getElementById('toastText');
+            text.innerText = message;
+            
+            toast.className = "fixed top-20 right-6 z-50 transform translate-x-0 transition-all duration-300 ease-out bg-slate-900 border border-indigo-500/40 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 max-w-sm pointer-events-none opacity-100";
+            
+            setTimeout(() => {
+                toast.className = "fixed top-20 right-6 z-50 transform translate-x-96 transition-all duration-300 ease-out bg-slate-900 border border-indigo-500/40 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 max-w-sm pointer-events-none opacity-0";
+            }, 3000);
+        }
+
+        // --- PRE-PROGRAMMED CATALOG SPECIFICATIONS ---
+        const MASTERPIECE_BLUEPRINTS = {
+            nature: [
+                {"type": "color", "value": "#60a5fa"}, 
+                {"type": "rect", "x": 0, "y": 0, "w": 800, "h": 600, "fill": true},
+                {"type": "color", "value": "#fef08a"}, 
+                {"type": "circle", "x": 400, "y": 250, "r": 90, "fill": true},
+                {"type": "color", "value": "#065f46"}, 
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 0, "y": 480},
+                {"type": "lineTo", "x": 800, "y": 480},
+                {"type": "lineTo", "x": 800, "y": 600},
+                {"type": "lineTo", "x": 0, "y": 600},
+                {"type": "stroke"},
+                {"type": "color", "value": "#047857"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 200, "y": 480},
+                {"type": "lineTo", "x": 250, "y": 380},
+                {"type": "lineTo", "x": 220, "y": 380},
+                {"type": "lineTo", "x": 260, "y": 290},
+                {"type": "lineTo", "x": 200, "y": 200}, 
+                {"type": "lineTo", "x": 140, "y": 290},
+                {"type": "lineTo", "x": 180, "y": 380},
+                {"type": "lineTo", "x": 150, "y": 380},
+                {"type": "lineTo", "x": 200, "y": 480},
+                {"type": "stroke"},
+                {"type": "color", "value": "#064e3b"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 600, "y": 480},
+                {"type": "lineTo", "x": 640, "y": 400},
+                {"type": "lineTo", "x": 610, "y": 400},
+                {"type": "lineTo", "x": 650, "y": 320},
+                {"type": "lineTo", "x": 600, "y": 240}, 
+                {"type": "lineTo", "x": 550, "y": 320},
+                {"type": "lineTo", "x": 590, "y": 400},
+                {"type": "lineTo", "x": 560, "y": 400},
+                {"type": "lineTo", "x": 600, "y": 480},
+                {"type": "stroke"},
+                {"type": "color", "value": "#78350f"}, 
+                {"type": "rect", "x": 350, "y": 410, "w": 100, "h": 70, "fill": true},
+                {"type": "color", "value": "#b91c1c"}, 
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 330, "y": 410},
+                {"type": "lineTo", "x": 400, "y": 350},
+                {"type": "lineTo", "x": 470, "y": 410},
+                {"type": "stroke"},
+                {"type": "color", "value": "#fef08a"}, 
+                {"type": "rect", "x": 385, "y": 430, "w": 30, "h": 30, "fill": true},
+                {"type": "color", "value": "#1e293b"},
+                {"type": "text", "x": 280, "y": 120, "text": "Serenity Mountain Cabin", "size": 36}
+            ],
+            space: [
+                {"type": "color", "value": "#0f172a"}, 
+                {"type": "rect", "x": 0, "y": 0, "w": 800, "h": 600, "fill": true},
+                {"type": "color", "value": "#ffffff"},
+                {"type": "circle", "x": 100, "y": 100, "r": 3, "fill": true},
+                {"type": "circle", "x": 700, "y": 150, "r": 2, "fill": true},
+                {"type": "circle", "x": 250, "y": 400, "r": 4, "fill": true},
+                {"type": "circle", "x": 600, "y": 450, "r": 3, "fill": true},
+                {"type": "circle", "x": 450, "y": 80, "r": 1, "fill": true},
+                {"type": "color", "value": "#f472b6"}, 
+                {"type": "circle", "x": 650, "y": 120, "r": 50, "fill": true},
+                {"type": "color", "value": "#38bdf8"}, 
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 560, "y": 140},
+                {"type": "lineTo", "x": 740, "y": 100},
+                {"type": "stroke"},
+                {"type": "color", "value": "#cbd5e1"}, 
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 400, "y": 180},
+                {"type": "lineTo", "x": 450, "y": 330},
+                {"type": "lineTo", "x": 350, "y": 330},
+                {"type": "lineTo", "x": 400, "y": 180},
+                {"type": "stroke"},
+                {"type": "color", "value": "#f97316"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 370, "y": 330},
+                {"type": "lineTo", "x": 400, "y": 420},
+                {"type": "lineTo", "x": 430, "y": 330},
+                {"type": "stroke"},
+                {"type": "color", "value": "#64748b"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 350, "y": 280},
+                {"type": "lineTo", "x": 320, "y": 330},
+                {"type": "lineTo", "x": 350, "y": 330},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 450, "y": 280},
+                {"type": "lineTo", "x": 480, "y": 330},
+                {"type": "lineTo", "x": 450, "y": 330},
+                {"type": "stroke"},
+                {"type": "color", "value": "#a5b4fc"},
+                {"type": "text", "x": 280, "y": 520, "text": "To the Stars and Beyond", "size": 38}
+            ],
+            cat: [
+                {"type": "color", "value": "#fafaf9"}, 
+                {"type": "rect", "x": 0, "y": 0, "w": 800, "h": 600, "fill": true},
+                {"type": "color", "value": "#fbbf24"}, 
+                {"type": "width", "value": 6},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 300, "y": 300},
+                {"type": "lineTo", "x": 280, "y": 180}, 
+                {"type": "lineTo", "x": 360, "y": 240},
+                {"type": "lineTo", "x": 440, "y": 240}, 
+                {"type": "lineTo", "x": 520, "y": 180}, 
+                {"type": "lineTo", "x": 500, "y": 300},
+                {"type": "quadraticCurveTo", "cpx": 400, "cpy": 420, "x": 300, "y": 300}, 
+                {"type": "stroke"},
+                {"type": "color", "value": "#000000"},
+                {"type": "circle", "x": 360, "y": 290, "r": 8, "fill": true},
+                {"type": "circle", "x": 440, "y": 290, "r": 8, "fill": true},
+                {"type": "color", "value": "#f43f5e"},
+                {"type": "circle", "x": 400, "y": 315, "r": 5, "fill": true},
+                {"type": "color", "value": "#000000"},
+                {"type": "width", "value": 3},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 400, "y": 320},
+                {"type": "quadraticCurveTo", "cpx": 385, "cpy": 340, "x": 370, "y": 330},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 400, "y": 320},
+                {"type": "quadraticCurveTo", "cpx": 415, "cpy": 340, "x": 430, "y": 330},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 310, "y": 320},
+                {"type": "lineTo", "x": 230, "y": 310},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 310, "y": 335},
+                {"type": "lineTo", "x": 240, "y": 340},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 490, "y": 320},
+                {"type": "lineTo", "x": 570, "y": 310},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 490, "y": 335},
+                {"type": "lineTo", "x": 560, "y": 340},
+                {"type": "stroke"},
+                {"type": "color", "value": "#ea580c"},
+                {"type": "text", "x": 320, "y": 480, "text": "Meow! Cozy ginger cat.", "size": 34}
+            ],
+            flower: [
+                {"type": "color", "value": "#faf5ff"},
+                {"type": "rect", "x": 0, "y": 0, "w": 800, "h": 600, "fill": true},
+                {"type": "color", "value": "#16a34a"},
+                {"type": "width", "value": 8},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 400, "y": 300},
+                {"type": "quadraticCurveTo", "cpx": 420, "cpy": 430, "x": 400, "y": 550},
+                {"type": "stroke"},
+                {"type": "beginPath"},
+                {"type": "moveTo", "x": 408, "y": 450},
+                {"type": "quadraticCurveTo", "cpx": 490, "cpy": 420, "x": 470, "y": 390},
+                {"type": "quadraticCurveTo", "cpx": 420, "cpy": 430, "x": 408, "y": 450},
+                {"type": "stroke"},
+                {"type": "color", "value": "#eab308"},
+                {"type": "circle", "x": 400, "y": 300, "r": 40, "fill": true},
+                {"type": "color", "value": "#a855f7"},
+                {"type": "circle", "x": 400, "y": 220, "r": 35, "fill": true}, 
+                {"type": "circle", "x": 400, "y": 380, "r": 35, "fill": true}, 
+                {"type": "circle", "x": 320, "y": 300, "r": 35, "fill": true}, 
+                {"type": "circle", "x": 480, "y": 300, "r": 35, "fill": true}, 
+                {"type": "circle", "x": 343, "y": 243, "r": 35, "fill": true},
+                {"type": "circle", "x": 457, "y": 243, "r": 35, "fill": true},
+                {"type": "circle", "x": 343, "y": 357, "r": 35, "fill": true},
+                {"type": "circle", "x": 457, "y": 357, "r": 35, "fill": true},
+                {"type": "color", "value": "#ca8a04"},
+                {"type": "circle", "x": 400, "y": 300, "r": 28, "fill": true},
+                {"type": "color", "value": "#701a75"},
+                {"type": "text", "x": 310, "y": 100, "text": "Blossoming Radiance", "size": 38}
+            ]
+        };
+
+        function loadMasterpiece(key) {
+            if (isAiDrawing) {
+                addActivityLog("AI brush is currently busy drawing. Please wait or clear canvas.");
+                return;
+            }
+            const blueprint = MASTERPIECE_BLUEPRINTS[key];
+            if (blueprint) {
+                clearCanvas();
+                addActivityLog(`Loaded blueprint: ${key.toUpperCase()}. Commencing AI visual presentation...`);
+                runDrawingCommandsLive(blueprint);
+            }
+        }
+
+        function addActivityLog(message) {
+            const box = document.getElementById('aiActivityLogBox');
+            const log = document.createElement('div');
+            
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            log.innerHTML = `<span class="text-indigo-400">[${timeStr}]</span> ${message}`;
+            
+            box.appendChild(log);
+            box.scrollTop = box.scrollHeight; 
+        }
+
+        function clearActivityLogs() {
+            const box = document.getElementById('aiActivityLogBox');
+            box.innerHTML = `<div class="text-slate-500 italic">// Awaiting actions...</div>`;
+            playCuteBeep(1000, 40, 0.02);
+        }
+
+        // --- LIFECYCLE INITIALIZER ---
+        window.onload = function() {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            history = []; 
+            
+            // Core parameter router triggers
+            checkUrlQueryParams();
+        }
+    </script>
+</body>
+</html>
