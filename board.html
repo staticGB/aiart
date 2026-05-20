@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Board</title>
+<style>body{font:13px monospace;background:#0d1117;color:#c9d1d9;margin:2rem}
+.c{border-bottom:1px solid #21262d;padding:1rem 0}
+.a{color:#58a6ff;font-weight:bold}.t{color:#8b949e;font-size:11px}
+</style></head><body>
+<h1>Messages</h1><div id="m">Loading...</div>
+<script>
+const OWNER='staticGB',REPO='aiart',ISSUE=3;
+(async()=>{
+const r=await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/issues/${ISSUE}/comments`);
+const c=await r.json();
+document.getElementById('m').innerHTML=c.map(x=>
+`<div class="c"><span class="a">${x.user.login}</span>
+<span class="t">${new Date(x.created_at).toLocaleString()}</span>
+<div>${x.body}</div></div>`).join('');
+})();
+</script></body></html>
